@@ -242,6 +242,60 @@ class MyRandomPerspective(K.RandomPerspective):
              mode=self.resample.name.lower(), align_corners=self.align_corners, padding_mode=global_padding_mode
         )
 
+class MyRandomResizedCrop(K.RandomResizedCrop):
+    def apply_transform(
+        self, input: torch.Tensor, params: Dict[str, torch.Tensor], transform: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        if self.cropping_mode == 'resample':  # uses bilinear interpolation to crop
+            transform = cast(torch.Tensor, transform)
+            return kornia.geometry.crop_by_transform_mat(
+                input,
+                transform,
+                self.size,
+                mode=self.resample.name.lower(),
+                padding_mode=global_padding_mode,
+                align_corners=self.align_corners,
+            )
+        if self.cropping_mode == 'slice':  # uses advanced slicing to crop
+            B, C, _, _ = input.shape
+            out = torch.empty(B, C, *self.size, device=input.device, dtype=input.dtype)
+            for i in range(B):
+                x1 = int(params['src'][i, 0, 0])
+                x2 = int(params['src'][i, 1, 0]) + 1
+                y1 = int(params['src'][i, 0, 1])
+                y2 = int(params['src'][i, 3, 1]) + 1
+                out[i] = kornia.geometry.resize(
+                    input[i : i + 1, :, y1:y2, x1:x2],
+                    self.size,
+                    interpolation=(self.resample.name).lower(),
+                    align_corners=self.align_corners,
+                )
+            return out
+        raise NotImplementedError(f"Not supported type: {self.cropping_mode}.")
+
+class MyCenterCrop(K.CenterCrop):
+    def apply_transform(
+        self, input: torch.Tensor, params: Dict[str, torch.Tensor], transform: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        if self.cropping_mode == 'resample':  # uses bilinear interpolation to crop
+            transform = cast(torch.Tensor, transform)
+            return kornia.geometry.crop_by_transform_mat(
+                input, transform[:, :2, :], self.size, self.resample.name.lower(),global_padding_mode, self.align_corners
+            )
+        if self.cropping_mode == 'slice':  # uses advanced slicing to crop
+            # TODO: implement as separated function `crop_and_resize_iterative`
+            B, C, _, _ = input.shape
+            H, W = self.size
+            out = torch.empty(B, C, H, W, device=input.device, dtype=input.dtype)
+            for i in range(B):
+                x1 = int(params['src'][i, 0, 0])
+                x2 = int(params['src'][i, 1, 0]) + 1
+                y1 = int(params['src'][i, 0, 1])
+                y2 = int(params['src'][i, 3, 1]) + 1
+                out[i] = input[i : i + 1, :, y1:y2, x1:x2]
+            return out
+        raise NotImplementedError(f"Not supported type: {self.cropping_mode}.")
+
 
 cached_spot_indexes = {}
 def fetch_spot_indexes(sideX, sideY):
@@ -285,11 +339,21 @@ class MakeCutouts(nn.Module):
         self.cut_pow = cut_pow
         self.transforms = None
 
+        randomcroppadding = {
+            "reflection":"reflect",
+            "border":"edge",
+        }
+
+        randomaffinepadding = {
+            "reflection":2,
+            "border":1,
+        }
+
         augmentations = []
         if global_aspect_width != 1:
-            augmentations.append(K.RandomCrop(size=(self.cut_size,self.cut_size), p=1.0, cropping_mode="resample", return_transform=True))
+            augmentations.append(K.RandomCrop(size=(self.cut_size,self.cut_size), p=1.0, cropping_mode="resample", padding_mode=randomcroppadding[global_padding_mode], return_transform=True))
         augmentations.append(MyRandomPerspective(distortion_scale=0.40, p=0.7, return_transform=True))
-        augmentations.append(K.RandomResizedCrop(size=(self.cut_size,self.cut_size), scale=(0.1,0.75),  ratio=(0.85,1.2), cropping_mode='resample', p=0.7, return_transform=True))
+        augmentations.append(MyRandomResizedCrop(size=(self.cut_size,self.cut_size), scale=(0.1,0.75),  ratio=(0.85,1.2), cropping_mode='resample', p=0.7, return_transform=True))
         augmentations.append(K.ColorJitter(hue=0.1, saturation=0.1, p=0.8, return_transform=True))
         self.augs_zoom = nn.Sequential(*augmentations)
 
@@ -297,19 +361,19 @@ class MakeCutouts(nn.Module):
         if global_aspect_width == 1:
             n_s = 0.95
             n_t = (1-n_s)/2
-            augmentations.append(K.RandomAffine(degrees=0, translate=(n_t, n_t), scale=(n_s, n_s), p=1.0, return_transform=True))
+            augmentations.append(K.RandomAffine(degrees=0, translate=(n_t, n_t), scale=(n_s, n_s), p=1.0,padding_mode=randomaffinepadding[global_padding_mode], return_transform=True))
         elif global_aspect_width > 1:
             n_s = 1/global_aspect_width
             n_t = (1-n_s)/2
-            augmentations.append(K.RandomAffine(degrees=0, translate=(0, n_t), scale=(0.9*n_s, n_s), p=1.0, return_transform=True))
+            augmentations.append(K.RandomAffine(degrees=0, translate=(0, n_t), scale=(0.9*n_s, n_s), p=1.0,padding_mode=randomaffinepadding[global_padding_mode], return_transform=True))
         else:
             n_s = global_aspect_width
             n_t = (1-n_s)/2
-            augmentations.append(K.RandomAffine(degrees=0, translate=(n_t, 0), scale=(0.9*n_s, n_s), p=1.0, return_transform=True))
+            augmentations.append(K.RandomAffine(degrees=0, translate=(n_t, 0), scale=(0.9*n_s, n_s), p=1.0,padding_mode=randomaffinepadding[global_padding_mode], return_transform=True))
 
         # augmentations.append(K.CenterCrop(size=(self.cut_size,self.cut_size), p=1.0, cropping_mode="resample", return_transform=True))
-        augmentations.append(K.CenterCrop(size=self.cut_size, cropping_mode='resample', p=1.0, return_transform=True))
-        augmentations.append(K.RandomPerspective(distortion_scale=0.20, p=0.7, return_transform=True))
+        augmentations.append(MyCenterCrop(size=self.cut_size, cropping_mode='resample', p=1.0, return_transform=True))
+        augmentations.append(MyRandomPerspective(distortion_scale=0.20, p=0.7, return_transform=True))
         augmentations.append(K.ColorJitter(hue=0.1, saturation=0.1, p=0.8, return_transform=True))
         self.augs_wide = nn.Sequential(*augmentations)
 
