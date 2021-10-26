@@ -20,7 +20,7 @@ from torchvision.transforms import functional as TF
 torch.backends.cudnn.benchmark = False		# NR: True is a bit faster, but can lead to OOM. False is more deterministic.
 #torch.use_deterministic_algorithms(True)		# NR: grid_sampler_2d_backward_cuda does not have a deterministic implementation
 
-from torch_optimizer import DiffGrad, AdamP, RAdam
+from torch_optimizer import DiffGrad, AdamP
 from perlin_numpy import generate_fractal_noise_2d
 
 # todo: fix this mess
