@@ -421,7 +421,7 @@ def rebuild_optimisers(args):
         elif args.optimiser == "AdamP":
             opt = AdamP(to_optimize, lr=dropped_learning_rate)     # LR=2+?
         elif args.optimiser == "RAdam":
-            opt = RAdam(to_optimize, lr=dropped_learning_rate)     # LR=2+?
+            opt = optim.RAdam(to_optimize, lr=dropped_learning_rate)     # LR=2+?
 
         new_opts = [opt]
 
